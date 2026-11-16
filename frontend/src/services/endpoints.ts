@@ -5,6 +5,8 @@
  * Stage 1 contracts.
  */
 export const ENDPOINTS = {
+  multiverse: "/api/multiverse",
+  source: "/api/source",
   notifications: "/api/notifications",
   councilStatus: "/api/v2/council/status",
   councilConversations: "/api/v2/conversations",

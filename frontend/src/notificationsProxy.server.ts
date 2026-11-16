@@ -1,5 +1,6 @@
 /** Server-only allowlist. Operator actions are local-demo-only and still authenticated. */
 import { z } from "zod";
+import { setTimeout as delay } from "node:timers/promises";
 import { readBody } from "./financialProxy.server";
 import { alertPreferencesSchema,watchRequestSchema,watchedPurchaseSchema,notificationSettingsSchema,notificationEventSchema,alertCheckSchema } from "./types/notifications";
 const stripWatchMetadata=(value:unknown)=>{if(value&&typeof value==='object'){const {last_ready: _lastReady,...publicItem}=value as Record<string,unknown>;return publicItem;}return value;};
@@ -12,6 +13,7 @@ export async function proxyNotifications(request:Request):Promise<Response>{
  if(!isNotificationPath(url.pathname)||url.search)return fail(404);
  if(request.headers.get("sec-fetch-site")==="cross-site"||(request.headers.get("origin")&&request.headers.get("origin")!==url.origin))return fail(403);
  const suffix=url.pathname.slice("/api/notifications/".length),remove=suffix.startsWith("watchlist/"),operator=suffix.startsWith("operator/");
+ if(operator && process.env["NODE_ENV"] === "production")return fail(404);
  const methods=operator?(suffix.endsWith("/state")||suffix.endsWith("/watchlist")||suffix.endsWith("/history")?["GET"]:["POST"]):remove?["DELETE"]:suffix==="settings"?["GET","PUT"]:suffix==="watchlist"?["GET","POST"]:suffix==="history"?["GET"]:["POST"];
  if(!methods.includes(request.method))return fail(405);
  let body:string|undefined;
@@ -25,7 +27,18 @@ export async function proxyNotifications(request:Request):Promise<Response>{
   const base=new URL(process.env["FINPILOT_BACKEND_URL"]||"http://127.0.0.1:8000");
   if(base.pathname!=="/"||base.search||base.hash||base.username||base.password||!["http:","https:"].includes(base.protocol)||(base.protocol==="http:"&&!["localhost","127.0.0.1","[::1]"].includes(base.hostname)))return fail(503);
   const opToken=request.headers.get("x-operator-token");
-  const response=await fetch(new URL(url.pathname,base),{method:request.method,...(body===undefined?{}:{body}),headers:{Authorization:`Bearer ${token}`,Accept:"application/json",...(body===undefined?{}:{"Content-Type":"application/json"}),...(operator&&opToken?{"X-Operator-Token":opToken}:{})},cache:"no-store",redirect:"error",signal:AbortSignal.any([request.signal,AbortSignal.timeout(60000)])});
+  const signal=AbortSignal.any([request.signal,AbortSignal.timeout(60000)]);
+  const send=()=>fetch(new URL(url.pathname,base),{method:request.method,...(body===undefined?{}:{body}),headers:{Authorization:`Bearer ${token}`,Accept:"application/json",...(body===undefined?{}:{"Content-Type":"application/json"}),...(operator&&opToken?{"X-Operator-Token":opToken}:{})},cache:"no-store",redirect:"error",signal});
+  let response=await send();
+  // Page-load GETs can temporarily exhaust the backend's four-request budget.
+  // Retry only its explicit pre-handler busy rejection, never storage failures or writes.
+  if(suffix==="history")for(const milliseconds of [100,250,500]){
+   if(response.status!==503)break;
+   const problem=await response.clone().json().catch(()=>null);
+   if(problem?.error?.code!=="server_busy")break;
+   await delay(milliseconds,undefined,{signal});
+   response=await send();
+  }
   if(!response.ok)return fail([400,401,403,404,409,422,429,503].includes(response.status)?response.status:502);
   if(operator)return Response.json(await response.json(),{status:response.status,headers});
   const schema=remove?z.object({removed:z.literal(true)}):suffix==="settings"?(request.method==="GET"?notificationSettingsSchema:z.object({saved:z.literal(true)})):suffix==="watchlist"?(request.method==="GET"?watchedPurchaseResponseSchema:watchedPurchaseItemResponseSchema):suffix==="history"?z.array(notificationEventSchema).max(100):alertCheckSchema;

@@ -144,6 +144,16 @@ def create_app(source=None, settings: SecuritySettings | None = None, history_so
                 else 'synthetic_demo' if data.customer_id == 'synthetic_demo' else 'configured_backend'}
 
     from .planning import CashPlanRequest, CashPlanResult, preview_cash_plan
+    from .provenance import SourceInfo, source_info
+    from .multiverse import MultiverseRequest, MultiverseResponse, compare_futures
+
+    @app.post('/api/multiverse', response_model=MultiverseResponse)
+    def multiverse(body: MultiverseRequest, data=Depends(get_data)):
+        return compare_futures(data, body, app.state.financial_source)
+
+    @app.get('/api/source', response_model=SourceInfo)
+    def financial_source(data=Depends(get_data)):
+        return source_info(data, app.state.financial_source)
 
     @app.post('/api/cash-plan/preview', response_model=CashPlanResult, operation_id='preview_cash_plan')
     def cash_plan(body: CashPlanRequest, data=Depends(get_data)):

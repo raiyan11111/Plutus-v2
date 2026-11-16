@@ -23,6 +23,9 @@ def install_notifications(app,snapshot_dependency,source):
     router=APIRouter(prefix='/api/notifications',tags=['Photon alerts'])
     def owner(request:Request):
         if not settings.api_token or not customer:raise HTTPException(503,'Alerts require a configured customer and service token')
+        from calculation_engine.nessie_adapter import NessieAdapter
+        if isinstance(app.state.financial_source,NessieAdapter) and not app.state.financial_source.account_id:
+            raise HTTPException(503,'Alerts require an explicit owned Nessie account selection')
         if request.query_params:raise HTTPException(400,'Client-selected customer or account is not supported')
         return scope
 
@@ -75,7 +78,12 @@ def install_notifications(app,snapshot_dependency,source):
     def perform(snapshot):
         if snapshot.customer_id!=customer:raise HTTPException(403,'Snapshot customer mismatch')
         if not lock.acquire(blocking=False):raise HTTPException(409,'An alert check is already running')
-        try:return check_account(snapshot,scope,source,app.state.history_source)
+        try:
+            from .jobs import drain
+            from .evaluator import deliver_message
+            result=check_account(snapshot,scope,source,app.state.history_source)
+            drain(deliver_message,scope)
+            return result
         finally:lock.release()
 
     @router.post('/check')
@@ -98,6 +106,8 @@ def install_notifications(app,snapshot_dependency,source):
             except Exception:app.state.alert_poll_failed=True # no raw records or URLs in logs
     async def start():
         nonlocal task
+        from .jobs import recover
+        await run_in_threadpool(recover)
         if poll and customer and settings.api_token:task=asyncio.create_task(worker())
     async def stop():
         if task:
